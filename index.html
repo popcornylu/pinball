@@ -2,11 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta http-equiv="Cache-Control" content="max-age=60, must-revalidate">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Pinball</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;overflow:hidden;background:#080818}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+html,body{width:100%;height:100%;height:100dvh;overflow:hidden;background:#080818;position:fixed;top:0;left:0}
 body{display:flex;justify-content:center;align-items:center}
 canvas{touch-action:none;display:block}
 </style>
@@ -39,12 +42,15 @@ const ctx = canvas.getContext('2d');
 canvas.width = W; canvas.height = H;
 
 function resize() {
-  const s = Math.min(innerWidth / W, innerHeight / H);
+  const vh = window.visualViewport ? window.visualViewport.height : innerHeight;
+  const vw = window.visualViewport ? window.visualViewport.width : innerWidth;
+  const s = Math.min(vw / W, vh / H);
   canvas.style.width = (W * s) + 'px';
   canvas.style.height = (H * s) + 'px';
 }
 resize();
 addEventListener('resize', resize);
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 
 function getCanvasPos(e) {
   const r = canvas.getBoundingClientRect();
@@ -502,51 +508,52 @@ function checkEdgeCases() {
 // ========== INPUT ==========
 let dragging = false;
 
-canvas.addEventListener('pointerdown', (e) => {
+// Prevent iOS rubber-band scrolling and other default gestures
+document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+document.addEventListener('gesturechange', (e) => e.preventDefault());
+
+function handleDown(e) {
   e.preventDefault();
-  const pos = getCanvasPos(e);
+  ensureAudio(); // iOS requires audio context from user gesture
+  const pos = getCanvasPos(e.touches ? e.touches[0] : e);
 
   if (state.phase === 'BETTING') {
-    // Bet down button
-    if (pos.x >= 152 && pos.x <= 182 && pos.y >= 15 && pos.y <= 45) {
+    if (pos.x >= 142 && pos.x <= 192 && pos.y >= 10 && pos.y <= 50) {
       state.bet = Math.max(1, state.bet - 1);
       return;
     }
-    // Bet up button
-    if (pos.x >= 238 && pos.x <= 268 && pos.y >= 15 && pos.y <= 45) {
+    if (pos.x >= 228 && pos.x <= 278 && pos.y >= 10 && pos.y <= 50) {
       state.bet = Math.min(Math.min(20, state.balls), state.bet + 1);
       return;
     }
-    // Start button
-    if (pos.x >= 145 && pos.x <= 275 && pos.y >= 370 && pos.y <= 420) {
+    if (pos.x >= 135 && pos.x <= 285 && pos.y >= 360 && pos.y <= 430) {
       startRound();
       return;
     }
   }
 
   if (state.phase === 'SPRING_READY') {
-    // Touch anywhere in lower-right area to grab plunger
-    if (pos.x > CHANNEL_X - 40 && pos.y > LANE_Y - 50) {
+    if (pos.x > CHANNEL_X - 80 && pos.y > LANE_Y - 80) {
       dragging = true;
     }
   }
 
   if (state.phase === 'GAME_OVER') {
-    // Restart button
-    if (pos.x >= 145 && pos.x <= 275 && pos.y >= 430 && pos.y <= 475) {
+    if (pos.x >= 135 && pos.x <= 285 && pos.y >= 420 && pos.y <= 485) {
       restartGame();
     }
   }
-});
+}
 
-canvas.addEventListener('pointermove', (e) => {
+function handleMove(e) {
   e.preventDefault();
   if (!dragging) return;
-  const pos = getCanvasPos(e);
+  const pos = getCanvasPos(e.touches ? e.touches[0] : e);
   state.plungerY = Math.max(PLUNGER_REST_Y, Math.min(PLUNGER_MAX_Y, pos.y));
-});
+}
 
-canvas.addEventListener('pointerup', (e) => {
+function handleUp(e) {
   e.preventDefault();
   if (dragging && state.phase === 'SPRING_READY') {
     const pullDist = state.plungerY - PLUNGER_REST_Y;
@@ -556,12 +563,17 @@ canvas.addEventListener('pointerup', (e) => {
     state.plungerY = PLUNGER_REST_Y;
   }
   dragging = false;
-});
+}
 
-canvas.addEventListener('pointercancel', () => {
+function handleCancel() {
   if (dragging) state.plungerY = PLUNGER_REST_Y;
   dragging = false;
-});
+}
+
+canvas.addEventListener('pointerdown', handleDown);
+canvas.addEventListener('pointermove', handleMove);
+canvas.addEventListener('pointerup', handleUp);
+canvas.addEventListener('pointercancel', handleCancel);
 
 // ========== EFFECTS ==========
 function spawnParticles(x, y, color, count) {

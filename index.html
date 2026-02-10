@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Pinball</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#080818}
+body{display:flex;justify-content:center;align-items:center}
+canvas{touch-action:none;display:block}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
+<script>
+(() => {
+'use strict';
+
+// ========== CONSTANTS ==========
+const W = 450, H = 800;
+const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
+const PLAY_W = CHANNEL_X;
+const PIN_R = 4, BALL_R = 8, BUMPER_R = 20;
+const LANE_COUNT = 14;
+const LANE_W = PLAY_W / LANE_COUNT;
+const LANE_Y = 700, LANE_H = 100;
+const PLUNGER_REST_Y = 735;
+const PLUNGER_MAX_Y = 785;
+const LAUNCH_MIN_V = 20, LAUNCH_MAX_V = 30;
+const MULTIPLIERS = [2, 4, 6, 8, 10];
+const LIT_COUNTS = {2:7, 4:4, 6:3, 8:2, 10:1};
+const TOP_BAR_H = 55;
+
+// ========== CANVAS ==========
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = W; canvas.height = H;
+
+function resize() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  canvas.style.width = (W * s) + 'px';
+  canvas.style.height = (H * s) + 'px';
+}
+resize();
+addEventListener('resize', resize);
+
+function getCanvasPos(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height) };
+}
+
+// ========== MATTER.JS SETUP ==========
+const { Engine, Bodies, Body, Events, Composite, Vector } = Matter;
+const engine = Engine.create({ gravity: { x: 0, y: 1.0 } });
+const world = engine.world;
+
+// ========== GAME STATE ==========
+const state = {
+  phase: 'BETTING', // BETTING, MULT_ANIM, SPRING_READY, IN_PLAY, RESULT, GAME_OVER
+  balls: 20,
+  bet: 1,
+  multiplier: 2,
+  highlightedMult: null,
+  litLanes: [],
+  plungerY: PLUNGER_REST_Y,
+  launchTime: 0,
+  stuckTimer: 0,
+  lastBallSpeed: 0,
+  roundsPlayed: 0,
+  resultTimer: 0,
+  resultText: '',
+  resultColor: '',
+  winAmount: 0,
+};
+
+let ball = null;
+let ballTrail = [];
+let particles = [];
+let floatingTexts = [];
+let shakeAmount = 0;
+let pinFlashes = {}; // pinIndex -> flash timer (0-1)
+let bumperFlashes = {}; // bumperIndex -> flash timer
+
+// ========== AUDIO ==========
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function playLaunchSound() {
+  const c = ensureAudio();
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(150, c.currentTime);
+  o.frequency.linearRampToValueAtTime(600, c.currentTime + 0.25);
+  g.gain.setValueAtTime(0.12, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.25);
+  o.connect(g).connect(c.destination);
+  o.start(); o.stop(c.currentTime + 0.25);
+}
+
+function playPinSound() {
+  const c = ensureAudio();
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = 'sine';
+  o.frequency.value = 800 + Math.random() * 400;
+  g.gain.setValueAtTime(0.06, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.08);
+  o.connect(g).connect(c.destination);
+  o.start(); o.stop(c.currentTime + 0.08);
+}
+
+function playBumperSound() {
+  const c = ensureAudio();
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = 'triangle';
+  o.frequency.value = 150 + Math.random() * 50;
+  g.gain.setValueAtTime(0.18, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.15);
+  o.connect(g).connect(c.destination);
+  o.start(); o.stop(c.currentTime + 0.15);
+}
+
+function playWinSound() {
+  const c = ensureAudio();
+  [261.63, 329.63, 392.00, 523.25].forEach((freq, i) => {
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = 'sine';
+    o.frequency.value = freq;
+    const t = c.currentTime + i * 0.1;
+    g.gain.setValueAtTime(0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    o.connect(g).connect(c.destination);
+    o.start(t); o.stop(t + 0.3);
+  });
+}
+
+function playLoseSound() {
+  const c = ensureAudio();
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = 'square';
+  o.frequency.setValueAtTime(300, c.currentTime);
+  o.frequency.linearRampToValueAtTime(100, c.currentTime + 0.35);
+  g.gain.setValueAtTime(0.08, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.35);
+  o.connect(g).connect(c.destination);
+  o.start(); o.stop(c.currentTime + 0.35);
+}
+
+function playTickSound() {
+  const c = ensureAudio();
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = 'sine';
+  o.frequency.value = 600;
+  g.gain.setValueAtTime(0.05, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.04);
+  o.connect(g).connect(c.destination);
+  o.start(); o.stop(c.currentTime + 0.04);
+}
+
+// ========== CREATE PHYSICS BODIES ==========
+const pins = [];     // {body, x, y, index}
+const bumpers = [];  // {body, x, y, r, index}
+const dividers = []; // bodies
+const curveGuide = []; // bodies
+
+// --- Walls ---
+function createWalls() {
+  const t = 12; // thickness
+  const bodies = [
+    // Top wall
+    Bodies.rectangle(W / 2, -t / 2 + 3, W, t, { isStatic: true, label: 'wall', restitution: 0.4 }),
+    // Bottom wall
+    Bodies.rectangle(W / 2, H + t / 2 - 2, W, t, { isStatic: true, label: 'wall' }),
+    // Left wall
+    Bodies.rectangle(-t / 2, H / 2, t, H, { isStatic: true, label: 'wall' }),
+    // Right wall (full height)
+    Bodies.rectangle(W + t / 2 - 2, H / 2, t, H, { isStatic: true, label: 'wall' }),
+    // Channel inner wall (from y=80 to y=800) — gap above lets ball exit into curve
+    Bodies.rectangle(CHANNEL_X, (80 + H) / 2, 6, H - 80, { isStatic: true, label: 'wall' }),
+  ];
+  Composite.add(world, bodies);
+}
+
+// --- Pin Grids ---
+function createPins() {
+  const hSpacing = 35;
+  const vSpacing = 27;
+
+  function addPin(x, y) {
+    const body = Bodies.circle(x, y, PIN_R, {
+      isStatic: true, label: 'pin', restitution: 0.6, friction: 0.05
+    });
+    const idx = pins.length;
+    pins.push({ body, x, y, index: idx });
+    Composite.add(world, body);
+  }
+
+  function addPinRow(y, rowIndex) {
+    const even = rowIndex % 2 === 0;
+    const cols = even ? 12 : 12;
+    const offset = even ? 10 : 27;
+    for (let col = 0; col < cols; col++) {
+      const x = offset + col * hSpacing;
+      if (x < 5 || x > PLAY_W - 5) continue;
+      addPin(x, y);
+    }
+  }
+
+  // Upper pin grid: y=130 to y=292
+  for (let row = 0; row < 7; row++) {
+    addPinRow(130 + row * vSpacing, row);
+  }
+
+  // Lower pin grid: y=490 to y=652 (7 rows)
+  for (let row = 0; row < 7; row++) {
+    addPinRow(490 + row * vSpacing, row);
+  }
+}
+
+// --- Bumpers ---
+function createBumpers() {
+  const positions = [
+    { x: 80, y: 380, r: 22 },
+    { x: 200, y: 360, r: 24 },
+    { x: 340, y: 380, r: 22 },
+    { x: 130, y: 450, r: 20 },
+    { x: 270, y: 450, r: 20 },
+  ];
+  positions.forEach((p, i) => {
+    const body = Bodies.circle(p.x, p.y, p.r, {
+      isStatic: true, label: 'bumper', restitution: 1.2, friction: 0.0
+    });
+    bumpers.push({ body, x: p.x, y: p.y, r: p.r, index: i });
+    Composite.add(world, body);
+  });
+}
+
+// --- Lane Dividers ---
+function createLaneDividers() {
+  for (let i = 1; i < LANE_COUNT; i++) {
+    const x = i * LANE_W;
+    const body = Bodies.rectangle(x, LANE_Y + LANE_H / 2 - 2, 5, LANE_H + 10, {
+      isStatic: true, label: 'divider', restitution: 0.3, friction: 0.1
+    });
+    dividers.push(body);
+    Composite.add(world, body);
+  }
+  // Left edge divider
+  const leftDiv = Bodies.rectangle(0, LANE_Y + LANE_H / 2, 6, LANE_H, {
+    isStatic: true, label: 'divider'
+  });
+  // Right edge divider (channel wall already exists)
+  dividers.push(leftDiv);
+  Composite.add(world, leftDiv);
+}
+
+// --- Curve Guide (top-right corner) ---
+function createCurveGuide() {
+  // Quarter-circle arc in top-right corner.
+  // Center at (cx, cy), radius r.  Ball follows the INSIDE of this arc.
+  // Arc goes from angle 0 (right side, where channel opens)
+  // to angle -π/2 (top, where ball exits into play area).
+  const cx = 350, cy = 80, r = 95;
+  const n = 25;
+  for (let i = 0; i <= n; i++) {
+    const angle = -(i / n) * Math.PI / 2; // 0 to -π/2
+    const x = cx + r * Math.cos(angle);
+    const y = cy + r * Math.sin(angle);
+    const body = Bodies.circle(x, y, 6, {
+      isStatic: true, label: 'curve', restitution: 0.5, friction: 0.0
+    });
+    curveGuide.push(body);
+    Composite.add(world, body);
+  }
+}
+
+// Initialize all bodies
+createWalls();
+createPins();
+createBumpers();
+createLaneDividers();
+createCurveGuide();
+
+// ========== COLLISION EVENTS ==========
+Events.on(engine, 'collisionStart', (event) => {
+  for (const pair of event.pairs) {
+    let a = pair.bodyA, b = pair.bodyB;
+    if (a.label === 'ball' || b.label === 'ball') {
+      const other = a.label === 'ball' ? b : a;
+      if (other.label === 'pin') {
+        const pinObj = pins.find(p => p.body === other);
+        if (pinObj) {
+          pinFlashes[pinObj.index] = 1.0;
+          playPinSound();
+        }
+      } else if (other.label === 'bumper') {
+        const bObj = bumpers.find(bp => bp.body === other);
+        if (bObj) {
+          bumperFlashes[bObj.index] = 1.0;
+          playBumperSound();
+        }
+      }
+    }
+  }
+});
+
+// ========== GAME LOGIC ==========
+function startRound() {
+  if (state.phase !== 'BETTING' || state.balls <= 0) return;
+  state.bet = Math.min(state.bet, state.balls);
+  if (state.bet < 1) return;
+  state.phase = 'MULT_ANIM';
+  state.litLanes = [];
+  state.highlightedMult = null;
+  animateMultiplier();
+}
+
+function animateMultiplier() {
+  const targetIdx = Math.floor(Math.random() * MULTIPLIERS.length);
+  const totalSteps = 3 * MULTIPLIERS.length + targetIdx + 1;
+  let step = 0;
+
+  function tick() {
+    const idx = step % MULTIPLIERS.length;
+    state.highlightedMult = MULTIPLIERS[idx];
+    playTickSound();
+    step++;
+    if (step < totalSteps) {
+      const progress = step / totalSteps;
+      const delay = 60 + progress * progress * 250;
+      setTimeout(tick, delay);
+    } else {
+      state.multiplier = MULTIPLIERS[targetIdx];
+      state.highlightedMult = MULTIPLIERS[targetIdx];
+      lightUpLanes();
+      setTimeout(() => {
+        if (state.phase === 'MULT_ANIM') {
+          state.phase = 'SPRING_READY';
+          state.plungerY = PLUNGER_REST_Y;
+        }
+      }, 400);
+    }
+  }
+  tick();
+}
+
+function lightUpLanes() {
+  const numLit = LIT_COUNTS[state.multiplier];
+  const indices = Array.from({ length: LANE_COUNT }, (_, i) => i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+  state.litLanes = indices.slice(0, numLit).sort((a, b) => a - b);
+}
+
+function launchBall() {
+  const pullDist = state.plungerY - PLUNGER_REST_Y;
+  if (pullDist < 5) return;
+  const power = pullDist / (PLUNGER_MAX_Y - PLUNGER_REST_Y);
+  const speed = LAUNCH_MIN_V + power * (LAUNCH_MAX_V - LAUNCH_MIN_V);
+  const bx = CHANNEL_X + CHANNEL_W / 2;
+  const by = state.plungerY - BALL_R - 5;
+
+  ball = Bodies.circle(bx, by, BALL_R, {
+    restitution: 0.5, friction: 0.05, frictionAir: 0.001,
+    label: 'ball', density: 0.002
+  });
+  Composite.add(world, ball);
+  Body.setVelocity(ball, { x: 0, y: -speed });
+
+  state.phase = 'IN_PLAY';
+  state.launchTime = Date.now();
+  state.stuckTimer = 0;
+  state.lastBallSpeed = speed;
+  ballTrail = [];
+  playLaunchSound();
+}
+
+function resolveRound(laneIndex) {
+  if (state.phase !== 'IN_PLAY') return;
+  // Remove ball
+  if (ball) {
+    Composite.remove(world, ball);
+    ball = null;
+  }
+  ballTrail = [];
+
+  const won = laneIndex >= 0 && state.litLanes.includes(laneIndex);
+  state.roundsPlayed++;
+
+  if (won) {
+    const payout = state.bet * state.multiplier;
+    state.balls += payout;
+    state.resultText = `+${payout} balls!`;
+    state.resultColor = '#ffd700';
+    state.winAmount = payout;
+    playWinSound();
+    // Spawn particles at lane center
+    const lx = laneIndex * LANE_W + LANE_W / 2;
+    spawnParticles(lx, LANE_Y, '#ffd700', 30);
+    addFloatingText(lx, LANE_Y - 20, `+${payout}`, '#ffd700');
+  } else {
+    state.balls -= state.bet;
+    state.resultText = `-${state.bet} balls`;
+    state.resultColor = '#ff4444';
+    state.winAmount = 0;
+    playLoseSound();
+    shakeAmount = 6;
+    if (laneIndex >= 0) {
+      const lx = laneIndex * LANE_W + LANE_W / 2;
+      addFloatingText(lx, LANE_Y - 20, `-${state.bet}`, '#ff4444');
+    }
+  }
+
+  state.phase = 'RESULT';
+  state.resultTimer = Date.now();
+
+  setTimeout(() => {
+    if (state.phase === 'RESULT') {
+      if (state.balls <= 0) {
+        state.balls = 0;
+        state.phase = 'GAME_OVER';
+      } else {
+        state.phase = 'BETTING';
+        state.bet = Math.min(state.bet, state.balls);
+        state.highlightedMult = null;
+        state.litLanes = [];
+      }
+    }
+  }, 2000);
+}
+
+function restartGame() {
+  state.balls = 20;
+  state.bet = 1;
+  state.phase = 'BETTING';
+  state.roundsPlayed = 0;
+  state.highlightedMult = null;
+  state.litLanes = [];
+  if (ball) { Composite.remove(world, ball); ball = null; }
+  ballTrail = [];
+  particles = [];
+  floatingTexts = [];
+}
+
+// ========== EDGE CASE HANDLING ==========
+function checkEdgeCases() {
+  if (!ball || state.phase !== 'IN_PLAY') return;
+  const pos = ball.position;
+  const spd = ball.speed;
+
+  // Ball landed in a lane
+  if (pos.y > 770 && spd < 2.5 && pos.x >= 0 && pos.x <= PLAY_W) {
+    const laneIdx = Math.min(LANE_COUNT - 1, Math.max(0, Math.floor(pos.x / LANE_W)));
+    resolveRound(laneIdx);
+    return;
+  }
+
+  // Ball fell back into channel - allow re-pull
+  if (pos.x > CHANNEL_X && pos.y > 750 && spd < 1.5) {
+    Composite.remove(world, ball);
+    ball = null;
+    ballTrail = [];
+    state.phase = 'SPRING_READY';
+    state.plungerY = PLUNGER_REST_Y;
+    return;
+  }
+
+  // Ball escaped canvas bounds
+  if (pos.x < -20 || pos.x > W + 20 || pos.y < -30 || pos.y > H + 20) {
+    resolveRound(-1);
+    return;
+  }
+
+  // Timeout (15 seconds)
+  if (Date.now() - state.launchTime > 15000) {
+    resolveRound(-1);
+    return;
+  }
+
+  // Stuck ball: speed < 0.3 for 3+ seconds above lanes
+  if (pos.y < LANE_Y - 30 && spd < 0.3) {
+    state.stuckTimer += 1 / 60;
+    if (state.stuckTimer > 3) {
+      Body.setVelocity(ball, {
+        x: (Math.random() - 0.5) * 4,
+        y: Math.random() * 2 + 1
+      });
+      state.stuckTimer = 0;
+    }
+  } else {
+    state.stuckTimer = 0;
+  }
+}
+
+// ========== INPUT ==========
+let dragging = false;
+
+canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const pos = getCanvasPos(e);
+
+  if (state.phase === 'BETTING') {
+    // Bet down button
+    if (pos.x >= 152 && pos.x <= 182 && pos.y >= 15 && pos.y <= 45) {
+      state.bet = Math.max(1, state.bet - 1);
+      return;
+    }
+    // Bet up button
+    if (pos.x >= 238 && pos.x <= 268 && pos.y >= 15 && pos.y <= 45) {
+      state.bet = Math.min(Math.min(20, state.balls), state.bet + 1);
+      return;
+    }
+    // Start button
+    if (pos.x >= 145 && pos.x <= 275 && pos.y >= 370 && pos.y <= 420) {
+      startRound();
+      return;
+    }
+  }
+
+  if (state.phase === 'SPRING_READY') {
+    // Touch anywhere in lower-right area to grab plunger
+    if (pos.x > CHANNEL_X - 40 && pos.y > LANE_Y - 50) {
+      dragging = true;
+    }
+  }
+
+  if (state.phase === 'GAME_OVER') {
+    // Restart button
+    if (pos.x >= 145 && pos.x <= 275 && pos.y >= 430 && pos.y <= 475) {
+      restartGame();
+    }
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  e.preventDefault();
+  if (!dragging) return;
+  const pos = getCanvasPos(e);
+  state.plungerY = Math.max(PLUNGER_REST_Y, Math.min(PLUNGER_MAX_Y, pos.y));
+});
+
+canvas.addEventListener('pointerup', (e) => {
+  e.preventDefault();
+  if (dragging && state.phase === 'SPRING_READY') {
+    const pullDist = state.plungerY - PLUNGER_REST_Y;
+    if (pullDist > 5) {
+      launchBall();
+    }
+    state.plungerY = PLUNGER_REST_Y;
+  }
+  dragging = false;
+});
+
+canvas.addEventListener('pointercancel', () => {
+  if (dragging) state.plungerY = PLUNGER_REST_Y;
+  dragging = false;
+});
+
+// ========== EFFECTS ==========
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 8,
+      vy: -Math.random() * 8 - 2,
+      life: 1,
+      color,
+      r: 2 + Math.random() * 3
+    });
+  }
+}
+
+function addFloatingText(x, y, text, color) {
+  floatingTexts.push({ x, y, text, color, life: 1, vy: -1.5 });
+}
+
+function updateEffects() {
+  // Particles
+  for (const p of particles) {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.15;
+    p.life -= 0.02;
+  }
+  particles = particles.filter(p => p.life > 0);
+
+  // Floating texts
+  for (const ft of floatingTexts) {
+    ft.y += ft.vy;
+    ft.life -= 0.012;
+  }
+  floatingTexts = floatingTexts.filter(ft => ft.life > 0);
+
+  // Pin/bumper flashes
+  for (const k in pinFlashes) {
+    pinFlashes[k] -= 0.08;
+    if (pinFlashes[k] <= 0) delete pinFlashes[k];
+  }
+  for (const k in bumperFlashes) {
+    bumperFlashes[k] -= 0.06;
+    if (bumperFlashes[k] <= 0) delete bumperFlashes[k];
+  }
+
+  // Shake decay
+  if (shakeAmount > 0) {
+    shakeAmount *= 0.9;
+    if (shakeAmount < 0.3) shakeAmount = 0;
+  }
+
+  // Ball trail
+  if (ball && state.phase === 'IN_PLAY') {
+    ballTrail.push({ x: ball.position.x, y: ball.position.y });
+    if (ballTrail.length > 15) ballTrail.shift();
+  }
+}
+
+// ========== RENDERING ==========
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawBackground() {
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#0a0a2e');
+  grad.addColorStop(0.5, '#0d0d25');
+  grad.addColorStop(1, '#08081a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Channel background
+  ctx.fillStyle = 'rgba(20, 15, 40, 0.8)';
+  ctx.fillRect(CHANNEL_X + 3, 0, CHANNEL_W - 3, H);
+
+  // Subtle grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+  ctx.lineWidth = 1;
+  for (let y = 60; y < LANE_Y; y += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(PLAY_W, y);
+    ctx.stroke();
+  }
+}
+
+function drawPins() {
+  for (const pin of pins) {
+    const flash = pinFlashes[pin.index] || 0;
+    const r = PIN_R + flash * 2;
+
+    if (flash > 0) {
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur = 8 * flash;
+    }
+
+    const grad = ctx.createRadialGradient(pin.x - 1, pin.y - 1, 0.5, pin.x, pin.y, r);
+    const bright = Math.floor(flash * 200);
+    grad.addColorStop(0, `rgb(${180 + bright},${180 + bright},${200 + bright * 0.3})`);
+    grad.addColorStop(1, `rgb(${70 + bright},${70 + bright},${90 + bright * 0.3})`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(pin.x, pin.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+}
+
+function drawBumpers() {
+  for (const b of bumpers) {
+    const flash = bumperFlashes[b.index] || 0;
+    const r = b.r + flash * 4;
+
+    ctx.shadowColor = '#ff3388';
+    ctx.shadowBlur = 10 + flash * 20;
+
+    const grad = ctx.createRadialGradient(b.x - 3, b.y - 3, 2, b.x, b.y, r);
+    const fb = Math.floor(flash * 100);
+    grad.addColorStop(0, `rgb(${255},${100 + fb},${150 + fb})`);
+    grad.addColorStop(1, `rgb(${180 + fb},${20},${60})`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Ring
+    ctx.strokeStyle = `rgba(255, 150, 200, ${0.5 + flash * 0.5})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, r + 3, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+  }
+}
+
+function drawLanes() {
+  for (let i = 0; i < LANE_COUNT; i++) {
+    const x = i * LANE_W;
+    const isLit = state.litLanes.includes(i);
+
+    if (isLit) {
+      const pulse = 0.6 + 0.4 * Math.sin(Date.now() * 0.004 + i * 0.5);
+      ctx.shadowColor = '#ff00ff';
+      ctx.shadowBlur = 12 * pulse;
+      ctx.fillStyle = `rgba(200, 0, 180, ${0.25 * pulse})`;
+      ctx.fillRect(x + 3, LANE_Y + 2, LANE_W - 6, LANE_H - 6);
+      ctx.shadowBlur = 0;
+
+      // Lit indicator
+      ctx.fillStyle = `rgba(255, 100, 255, ${0.6 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(x + LANE_W / 2, LANE_Y + 15, 4, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = 'rgba(30, 30, 50, 0.4)';
+      ctx.fillRect(x + 3, LANE_Y + 2, LANE_W - 6, LANE_H - 6);
+    }
+  }
+
+  // Dividers
+  for (let i = 1; i < LANE_COUNT; i++) {
+    const x = i * LANE_W;
+    const grad = ctx.createLinearGradient(x - 2, LANE_Y - 5, x + 2, LANE_Y - 5);
+    grad.addColorStop(0, '#334');
+    grad.addColorStop(0.5, '#667');
+    grad.addColorStop(1, '#334');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x - 2.5, LANE_Y - 5, 5, LANE_H + 5);
+
+    // Metallic cap
+    ctx.fillStyle = '#889';
+    ctx.beginPath();
+    ctx.arc(x, LANE_Y - 5, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Left/right lane boundaries
+  ctx.fillStyle = '#445';
+  ctx.fillRect(-1, LANE_Y, 4, LANE_H);
+  ctx.fillRect(PLAY_W - 3, LANE_Y, 6, LANE_H);
+}
+
+function drawCurveGuide() {
+  // Red/orange arc line showing ball path (drawn behind the circles)
+  const cx = 350, cy = 80, r = 95;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 10, -Math.PI / 2, 0);
+  ctx.strokeStyle = '#cc3320';
+  ctx.lineWidth = 3.5;
+  ctx.stroke();
+
+  // Guide circles
+  for (const body of curveGuide) {
+    const grad = ctx.createRadialGradient(
+      body.position.x - 1, body.position.y - 1, 0.5,
+      body.position.x, body.position.y, 6
+    );
+    grad.addColorStop(0, '#99a');
+    grad.addColorStop(1, '#445');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(body.position.x, body.position.y, 6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawBallTrail() {
+  for (let i = 0; i < ballTrail.length; i++) {
+    const alpha = ((i + 1) / ballTrail.length) * 0.35;
+    const r = BALL_R * ((i + 1) / ballTrail.length);
+    ctx.fillStyle = `rgba(180, 180, 255, ${alpha})`;
+    ctx.beginPath();
+    ctx.arc(ballTrail[i].x, ballTrail[i].y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawBall(x, y) {
+  const grad = ctx.createRadialGradient(x - 2, y - 2, 1, x, y, BALL_R);
+  grad.addColorStop(0, '#ffffff');
+  grad.addColorStop(0.3, '#ddddee');
+  grad.addColorStop(0.7, '#9999bb');
+  grad.addColorStop(1, '#555577');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(x, y, BALL_R, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.beginPath();
+  ctx.arc(x - 2, y - 2, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawSpring() {
+  if (state.phase !== 'SPRING_READY' && state.phase !== 'MULT_ANIM') return;
+  const cx = CHANNEL_X + CHANNEL_W / 2;
+  const plY = state.plungerY;
+  const anchorY = H - 10;
+  const pullDist = plY - PLUNGER_REST_Y;
+  const power = pullDist / (PLUNGER_MAX_Y - PLUNGER_REST_Y);
+
+  // Spring coils
+  const numCoils = 8;
+  const springTop = plY + 8;
+  const springHeight = anchorY - springTop;
+  const coilH = springHeight / numCoils;
+  const halfW = 9;
+
+  const r = Math.floor(80 + 175 * power);
+  const g = Math.floor(200 * (1 - power));
+  ctx.strokeStyle = `rgb(${r},${g},30)`;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(cx, anchorY);
+  for (let i = 0; i < numCoils; i++) {
+    const yy = anchorY - (i + 0.5) * coilH;
+    const dir = i % 2 === 0 ? 1 : -1;
+    ctx.lineTo(cx + halfW * dir, yy);
+  }
+  ctx.lineTo(cx, springTop);
+  ctx.stroke();
+
+  // Plunger head
+  ctx.fillStyle = '#888';
+  roundRect(cx - 10, plY - 4, 20, 12, 3);
+  ctx.fill();
+  ctx.fillStyle = '#aaa';
+  roundRect(cx - 7, plY - 2, 14, 8, 2);
+  ctx.fill();
+
+  // Power indicator bar (right side of channel)
+  if (power > 0) {
+    const barH = 60 * power;
+    const barGrad = ctx.createLinearGradient(0, plY, 0, plY - barH);
+    barGrad.addColorStop(0, `rgb(${r},${g},30)`);
+    barGrad.addColorStop(1, `rgba(${r},${g},30,0.3)`);
+    ctx.fillStyle = barGrad;
+    ctx.fillRect(CHANNEL_X + CHANNEL_W - 6, plY - barH, 4, barH);
+  }
+
+  // Ball preview on plunger
+  if (state.phase === 'SPRING_READY') {
+    drawBall(cx, plY - BALL_R - 6);
+  }
+}
+
+function drawTopBar() {
+  // Background
+  ctx.fillStyle = 'rgba(5, 5, 25, 0.85)';
+  ctx.fillRect(0, 0, W, TOP_BAR_H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, TOP_BAR_H);
+  ctx.lineTo(W, TOP_BAR_H);
+  ctx.stroke();
+
+  // Ball count
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 18px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`\u25CF ${state.balls}`, 12, 30);
+
+  // Bet label + controls
+  ctx.fillStyle = '#aaa';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('BET', 210, 12);
+
+  // - button
+  const canBet = state.phase === 'BETTING';
+  ctx.fillStyle = canBet ? 'rgba(255,102,153,0.3)' : 'rgba(100,100,100,0.2)';
+  roundRect(152, 17, 28, 26, 6);
+  ctx.fill();
+  ctx.strokeStyle = canBet ? '#ff6699' : '#555';
+  ctx.lineWidth = 1.5;
+  roundRect(152, 17, 28, 26, 6);
+  ctx.stroke();
+  ctx.fillStyle = canBet ? '#fff' : '#666';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('\u2212', 166, 32);
+
+  // Bet number
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px monospace';
+  ctx.fillText(state.bet, 210, 32);
+
+  // + button
+  ctx.fillStyle = canBet ? 'rgba(255,102,153,0.3)' : 'rgba(100,100,100,0.2)';
+  roundRect(238, 17, 28, 26, 6);
+  ctx.fill();
+  ctx.strokeStyle = canBet ? '#ff6699' : '#555';
+  ctx.lineWidth = 1.5;
+  roundRect(238, 17, 28, 26, 6);
+  ctx.stroke();
+  ctx.fillStyle = canBet ? '#fff' : '#666';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.fillText('+', 252, 32);
+
+  // Multiplier badges
+  MULTIPLIERS.forEach((m, i) => {
+    const bx = 298 + i * 30;
+    const by = 17;
+    const active = state.highlightedMult === m;
+    const selected = state.multiplier === m && (state.phase === 'SPRING_READY' || state.phase === 'IN_PLAY' || state.phase === 'RESULT');
+
+    if (active || selected) {
+      ctx.shadowColor = '#ff00cc';
+      ctx.shadowBlur = active ? 12 : 6;
+      ctx.fillStyle = '#ff00cc';
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    }
+    ctx.beginPath();
+    ctx.arc(bx + 12, by + 13, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = (active || selected) ? '#fff' : 'rgba(255,255,255,0.35)';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(m + 'x', bx + 12, by + 14);
+  });
+
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawStartButton() {
+  if (state.phase !== 'BETTING') return;
+  const bx = 145, by = 370, bw = 130, bh = 48;
+  const pulse = 0.85 + 0.15 * Math.sin(Date.now() * 0.003);
+
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 12 * pulse;
+  ctx.fillStyle = `rgba(0, 200, 100, ${0.85 * pulse})`;
+  roundRect(bx, by, bw, bh, 12);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  roundRect(bx, by, bw, bh, 12);
+  ctx.stroke();
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('START', bx + bw / 2, by + bh / 2 + 7);
+}
+
+function drawResult() {
+  if (state.phase !== 'RESULT') return;
+  const elapsed = Date.now() - state.resultTimer;
+  const alpha = Math.min(1, elapsed / 300) * Math.max(0, 1 - (elapsed - 1200) / 800);
+  if (alpha <= 0) return;
+
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = state.resultColor;
+  ctx.font = 'bold 32px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = state.resultColor;
+  ctx.shadowBlur = 15;
+  ctx.fillText(state.resultText, PLAY_W / 2, 400);
+  ctx.shadowBlur = 0;
+
+  // Multiplier info
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(`${state.multiplier}x multiplier`, PLAY_W / 2, 435);
+  ctx.globalAlpha = 1;
+}
+
+function drawGameOver() {
+  if (state.phase !== 'GAME_OVER') return;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#ff4466';
+  ctx.font = 'bold 36px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('GAME OVER', W / 2, 360);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(`Rounds played: ${state.roundsPlayed}`, W / 2, 400);
+
+  // Restart button
+  const bx = 145, by = 430, bw = 130, bh = 44;
+  ctx.fillStyle = '#ff6699';
+  roundRect(bx, by, bw, bh, 10);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.fillText('PLAY AGAIN', bx + bw / 2, by + bh / 2 + 6);
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawFloatingTexts() {
+  for (const ft of floatingTexts) {
+    ctx.globalAlpha = ft.life;
+    ctx.fillStyle = ft.color;
+    ctx.font = 'bold 24px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = ft.color;
+    ctx.shadowBlur = 8;
+    ctx.fillText(ft.text, ft.x, ft.y);
+    ctx.shadowBlur = 0;
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawInstructions() {
+  if (state.phase === 'SPRING_READY') {
+    const alpha = 0.4 + 0.3 * Math.sin(Date.now() * 0.003);
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('\u2193 Drag plunger down & release \u2193', CHANNEL_X + CHANNEL_W / 2, LANE_Y - 15);
+
+    // Arrow pointing to plunger
+    const ax = CHANNEL_X + CHANNEL_W / 2;
+    const ay = LANE_Y + 15;
+    ctx.strokeStyle = `rgba(255,200,100,${alpha})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax, ay + 25);
+    ctx.moveTo(ax - 6, ay + 19);
+    ctx.lineTo(ax, ay + 25);
+    ctx.lineTo(ax + 6, ay + 19);
+    ctx.stroke();
+  }
+}
+
+function render() {
+  ctx.save();
+
+  // Screen shake
+  if (shakeAmount > 0) {
+    ctx.translate(
+      (Math.random() - 0.5) * shakeAmount,
+      (Math.random() - 0.5) * shakeAmount
+    );
+  }
+
+  drawBackground();
+  drawLanes();
+  drawPins();
+  drawBumpers();
+  drawCurveGuide();
+  drawSpring();
+
+  // Draw ball trail + ball
+  if (ball && state.phase === 'IN_PLAY') {
+    drawBallTrail();
+    drawBall(ball.position.x, ball.position.y);
+  }
+
+  drawParticles();
+  drawFloatingTexts();
+  drawTopBar();
+  drawStartButton();
+  drawResult();
+  drawGameOver();
+  drawInstructions();
+
+  ctx.restore();
+}
+
+// ========== MAIN LOOP ==========
+let lastTime = 0;
+const FIXED_DT = 1000 / 60;
+
+function gameLoop(timestamp) {
+  if (!lastTime) lastTime = timestamp;
+  const dt = Math.min(timestamp - lastTime, 50); // cap at 50ms
+  lastTime = timestamp;
+
+  // Physics update
+  Engine.update(engine, FIXED_DT);
+
+  // Game logic
+  checkEdgeCases();
+  updateEffects();
+
+  // Render
+  render();
+
+  requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>

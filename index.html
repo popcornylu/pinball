@@ -22,7 +22,7 @@ canvas{touch-action:none;display:block}
 'use strict';
 
 // ========== CONSTANTS ==========
-const VERSION = 'v1.13';
+const VERSION = 'v1.14';
 const W = 450, H = 800;
 const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
 const PLAY_W = CHANNEL_X;
@@ -474,6 +474,7 @@ function resolveRound(laneIndex) {
     if (state.phase === 'RESULT') {
       if (state.balls <= 0 || state.timeUp) {
         state.balls = Math.max(0, state.balls);
+        saveScore(state.balls, state.roundsPlayed);
         state.phase = 'GAME_OVER';
       } else {
         // Auto-start next round (skip BETTING after first round)
@@ -504,6 +505,20 @@ function restartGame() {
   floatingTexts = [];
 }
 
+// ========== LEADERBOARD ==========
+function getLeaderboard() {
+  try {
+    return JSON.parse(localStorage.getItem('pinball_leaderboard') || '[]');
+  } catch { return []; }
+}
+
+function saveScore(balls, rounds) {
+  const board = getLeaderboard();
+  board.push({ balls, rounds, date: Date.now() });
+  board.sort((a, b) => b.balls - a.balls);
+  localStorage.setItem('pinball_leaderboard', JSON.stringify(board.slice(0, 10)));
+}
+
 function getTimeRemaining() {
   if (!state.gameStartTime) return GAME_DURATION;
   return Math.max(0, GAME_DURATION - (Date.now() - state.gameStartTime) / 1000);
@@ -515,6 +530,7 @@ function checkTimer() {
     state.timeUp = true;
     // If ball is in play, let it finish; otherwise go to GAME_OVER
     if (state.phase !== 'IN_PLAY' && state.phase !== 'RESULT') {
+      saveScore(state.balls, state.roundsPlayed);
       state.phase = 'GAME_OVER';
     }
   }
@@ -652,7 +668,7 @@ function handleDown(e) {
   }
 
   if (state.phase === 'GAME_OVER') {
-    if (pos.x >= 135 && pos.x <= 285 && pos.y >= 440 && pos.y <= 505) {
+    if (pos.x >= 135 && pos.x <= 285 && pos.y >= 510 && pos.y <= 575) {
       restartGame();
     }
   }
@@ -1170,23 +1186,44 @@ function drawGameOver() {
   ctx.fillStyle = '#ff4466';
   ctx.font = 'bold 36px sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(state.timeUp ? '時間到！' : 'GAME OVER', W / 2, 350);
+  ctx.fillText(state.timeUp ? '時間到！' : 'GAME OVER', W / 2, 100);
 
   ctx.fillStyle = '#ffd700';
   ctx.font = 'bold 24px sans-serif';
-  ctx.fillText(`最終球數: ${state.balls}`, W / 2, 390);
+  ctx.fillText(`最終球數: ${state.balls}`, W / 2, 140);
 
   ctx.fillStyle = '#aaa';
   ctx.font = '16px sans-serif';
-  ctx.fillText(`共 ${state.roundsPlayed} 局`, W / 2, 420);
+  ctx.fillText(`共 ${state.roundsPlayed} 局`, W / 2, 170);
+
+  // Leaderboard
+  const board = getLeaderboard();
+  if (board.length > 0) {
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText('排行榜', W / 2, 220);
+
+    ctx.font = '13px monospace';
+    for (let i = 0; i < board.length; i++) {
+      const entry = board[i];
+      const y = 250 + i * 24;
+      const isCurrent = entry.balls === state.balls && entry.rounds === state.roundsPlayed && entry.date > Date.now() - 5000;
+      ctx.fillStyle = isCurrent ? '#ffd700' : 'rgba(255,255,255,0.7)';
+      const d = new Date(entry.date);
+      const dateStr = `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${d.getMinutes().toString().padStart(2, '0')}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(`#${i + 1}  ${entry.balls} 球  ${entry.rounds} 局  ${dateStr}`, W / 2, y);
+    }
+  }
 
   // Restart button
-  const bx = 145, by = 450, bw = 130, bh = 44;
+  const bx = 145, by = 520, bw = 130, bh = 44;
   ctx.fillStyle = '#ff6699';
   roundRect(bx, by, bw, bh, 10);
   ctx.fill();
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 16px sans-serif';
+  ctx.textAlign = 'center';
   ctx.fillText('再玩一次', bx + bw / 2, by + bh / 2 + 6);
 }
 

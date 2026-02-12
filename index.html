@@ -22,7 +22,7 @@ canvas{touch-action:none;display:block}
 'use strict';
 
 // ========== CONSTANTS ==========
-const VERSION = 'v1.6';
+const VERSION = 'v1.7';
 const W = 450, H = 800;
 const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
 const PLAY_W = CHANNEL_X;
@@ -530,8 +530,8 @@ function nudgeTable() {
   if (now - lastNudgeTime < 500) return;
   lastNudgeTime = now;
 
-  const fx = (Math.random() - 0.5) * 0.036;
-  const fy = (Math.random() - 0.5) * 0.024 - 0.012;
+  const fx = (Math.random() - 0.5) * 0.0288;
+  const fy = (Math.random() - 0.5) * 0.0192 - 0.0096;
   Body.applyForce(ball, ball.position, { x: fx, y: fy });
 
   shakeAmount = 8;
@@ -917,7 +917,7 @@ function drawBall(x, y) {
 }
 
 function drawSpring() {
-  if (state.phase !== 'SPRING_READY' && state.phase !== 'MULT_ANIM') return;
+  if (state.phase !== 'SPRING_READY' && state.phase !== 'MULT_ANIM' && state.phase !== 'IN_PLAY') return;
   const cx = CHANNEL_X + CHANNEL_W / 2;
   const plY = state.plungerY;
   const anchorY = H - 10;

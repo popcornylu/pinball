@@ -33,8 +33,9 @@ const LANE_Y = 700, LANE_H = 100;
 const PLUNGER_REST_Y = 735;
 const PLUNGER_MAX_Y = 785;
 const LAUNCH_MIN_V = 6, LAUNCH_MAX_V = 36;
-const MULTIPLIERS = [2, 4, 6, 8, 10];
-const LIT_COUNTS = {2:6, 4:3, 6:2, 8:1, 10:1};
+const MULTIPLIERS = [2, 4, 6, 12];
+const LIT_COUNTS = {2:6, 4:3, 6:2, 12:1};
+const BONUS_CHANCE = 0.2;
 const TOP_BAR_H = 55;
 
 // ========== CANVAS ==========
@@ -71,6 +72,7 @@ const state = {
   multiplier: 2,
   highlightedMult: null,
   litLanes: [],
+  bonusLane: -1, // -1 = no bonus this round
   plungerY: PLUNGER_REST_Y,
   launchTime: 0,
   stuckTimer: 0,
@@ -214,8 +216,8 @@ function createWalls() {
 
 // --- Pin Grids ---
 function createPins() {
-  const hSpacing = 35;
-  const vSpacing = 27;
+  const hSpacing = 28;
+  const vSpacing = 25;
 
   function addPin(x, y) {
     const body = Bodies.circle(x, y, PIN_R, {
@@ -228,21 +230,21 @@ function createPins() {
 
   function addPinRow(y, rowIndex) {
     const even = rowIndex % 2 === 0;
-    const cols = even ? 12 : 12;
-    const offset = even ? 10 : 27;
+    const cols = even ? 16 : 16;
+    const offset = even ? 8 : 25;
     for (let col = 0; col < cols; col++) {
       const x = offset + col * hSpacing;
-      if (x < 5 || x > PLAY_W - 5) continue;
+      if (x < 3 || x > PLAY_W - 3) continue;
       addPin(x, y);
     }
   }
 
-  // Upper pin grid: y=130 to y=292
+  // Upper pin grid: 7 rows
   for (let row = 0; row < 7; row++) {
     addPinRow(130 + row * vSpacing, row);
   }
 
-  // Lower pin grid: y=490 to y=652 (7 rows)
+  // Lower pin grid: 7 rows
   for (let row = 0; row < 7; row++) {
     addPinRow(490 + row * vSpacing, row);
   }
@@ -342,6 +344,7 @@ function startRound() {
   if (state.bet < 1) return;
   state.phase = 'MULT_ANIM';
   state.litLanes = [];
+  state.bonusLane = -1;
   state.highlightedMult = null;
   animateMultiplier();
 }
@@ -383,6 +386,18 @@ function lightUpLanes() {
     [indices[i], indices[j]] = [indices[j], indices[i]];
   }
   state.litLanes = indices.slice(0, numLit).sort((a, b) => a - b);
+
+  // Bonus lane: 20% chance, pick from unlit lanes
+  if (Math.random() < BONUS_CHANCE) {
+    const unlit = indices.slice(numLit);
+    if (unlit.length > 0) {
+      state.bonusLane = unlit[Math.floor(Math.random() * unlit.length)];
+    } else {
+      state.bonusLane = -1;
+    }
+  } else {
+    state.bonusLane = -1;
+  }
 }
 
 function launchBall() {
@@ -419,19 +434,23 @@ function resolveRound(laneIndex) {
   ballTrail = [];
 
   const won = laneIndex >= 0 && state.litLanes.includes(laneIndex);
+  const bonusWon = laneIndex >= 0 && laneIndex === state.bonusLane;
   state.roundsPlayed++;
 
-  if (won) {
-    const payout = state.bet * state.multiplier;
+  if (won || bonusWon) {
+    const mult = bonusWon ? state.multiplier * 2 : state.multiplier;
+    const payout = state.bet * mult;
     state.balls += payout;
-    state.resultText = `+${payout} balls!`;
-    state.resultColor = '#ffd700';
+    const bonusTag = bonusWon ? ' BONUS!' : '';
+    state.resultText = `+${payout} balls!${bonusTag}`;
+    state.resultColor = bonusWon ? '#00ffcc' : '#ffd700';
     state.winAmount = payout;
     playWinSound();
     // Spawn particles at lane center
     const lx = laneIndex * LANE_W + LANE_W / 2;
-    spawnParticles(lx, LANE_Y, '#ffd700', 30);
-    addFloatingText(lx, LANE_Y - 20, `+${payout}`, '#ffd700');
+    const color = bonusWon ? '#00ffcc' : '#ffd700';
+    spawnParticles(lx, LANE_Y, color, bonusWon ? 50 : 30);
+    addFloatingText(lx, LANE_Y - 20, `+${payout}`, color);
   } else {
     state.balls -= state.bet;
     state.resultText = `-${state.bet} balls`;
@@ -458,6 +477,7 @@ function resolveRound(laneIndex) {
         state.bet = Math.min(state.bet, state.balls);
         state.highlightedMult = null;
         state.litLanes = [];
+        state.bonusLane = -1;
         state.phase = 'MULT_ANIM';
         animateMultiplier();
       }
@@ -472,6 +492,7 @@ function restartGame() {
   state.roundsPlayed = 0;
   state.highlightedMult = null;
   state.litLanes = [];
+  state.bonusLane = -1;
   if (ball) { Composite.remove(world, ball); ball = null; }
   ballTrail = [];
   particles = [];
@@ -865,20 +886,33 @@ function drawLanes() {
   for (let i = 0; i < LANE_COUNT; i++) {
     const x = i * LANE_W;
     const isLit = state.litLanes.includes(i);
+    const isBonus = i === state.bonusLane;
 
-    if (isLit) {
-      const pulse = 0.6 + 0.4 * Math.sin(Date.now() * 0.004 + i * 0.5);
-      ctx.shadowColor = '#ff00ff';
+    if (isLit || isBonus) {
+      const pulse = 0.6 + 0.4 * Math.sin(Date.now() * (isBonus ? 0.006 : 0.004) + i * 0.5);
+      ctx.shadowColor = isBonus ? '#00ffcc' : '#ff00ff';
       ctx.shadowBlur = 12 * pulse;
-      ctx.fillStyle = `rgba(200, 0, 180, ${0.25 * pulse})`;
+      ctx.fillStyle = isBonus
+        ? `rgba(0, 200, 160, ${0.3 * pulse})`
+        : `rgba(200, 0, 180, ${0.25 * pulse})`;
       ctx.fillRect(x + 3, LANE_Y + 2, LANE_W - 6, LANE_H - 6);
       ctx.shadowBlur = 0;
 
       // Lit indicator
-      ctx.fillStyle = `rgba(255, 100, 255, ${0.6 * pulse})`;
+      ctx.fillStyle = isBonus
+        ? `rgba(0, 255, 200, ${0.7 * pulse})`
+        : `rgba(255, 100, 255, ${0.6 * pulse})`;
       ctx.beginPath();
       ctx.arc(x + LANE_W / 2, LANE_Y + 15, 4, 0, Math.PI * 2);
       ctx.fill();
+
+      // Bonus label
+      if (isBonus) {
+        ctx.fillStyle = `rgba(0, 255, 200, ${0.8 * pulse})`;
+        ctx.font = 'bold 8px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('BONUS', x + LANE_W / 2, LANE_Y + 28);
+      }
     } else {
       ctx.fillStyle = 'rgba(30, 30, 50, 0.4)';
       ctx.fillRect(x + 3, LANE_Y + 2, LANE_W - 6, LANE_H - 6);

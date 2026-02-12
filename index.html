@@ -36,6 +36,7 @@ const LAUNCH_MIN_V = 6, LAUNCH_MAX_V = 50;
 const MULTIPLIERS = [2, 4, 6, 8, 10];
 const LIT_COUNTS = {2:6, 4:3, 6:2, 8:1, 10:1};
 const BONUS_CHANCE = 0.2;
+const GAME_DURATION = 180; // seconds (3:00)
 const TOP_BAR_H = 55;
 
 // ========== CANVAS ==========
@@ -84,6 +85,8 @@ const state = {
   winAmount: 0,
   ballInChannel: false,
   springBounce: 0,
+  gameStartTime: 0, // set when first round starts
+  timeUp: false,
 };
 
 let ball = null;
@@ -339,6 +342,8 @@ function startRound() {
   if (state.phase !== 'BETTING' || state.balls <= 0) return;
   state.bet = Math.min(state.bet, state.balls);
   if (state.bet < 1) return;
+  state.gameStartTime = Date.now();
+  state.timeUp = false;
   state.phase = 'MULT_ANIM';
   state.litLanes = [];
   state.bonusLane = -1;
@@ -467,8 +472,8 @@ function resolveRound(laneIndex) {
 
   setTimeout(() => {
     if (state.phase === 'RESULT') {
-      if (state.balls <= 0) {
-        state.balls = 0;
+      if (state.balls <= 0 || state.timeUp) {
+        state.balls = Math.max(0, state.balls);
         state.phase = 'GAME_OVER';
       } else {
         // Auto-start next round (skip BETTING after first round)
@@ -491,10 +496,28 @@ function restartGame() {
   state.highlightedMult = null;
   state.litLanes = [];
   state.bonusLane = -1;
+  state.gameStartTime = 0;
+  state.timeUp = false;
   if (ball) { Composite.remove(world, ball); ball = null; }
   ballTrail = [];
   particles = [];
   floatingTexts = [];
+}
+
+function getTimeRemaining() {
+  if (!state.gameStartTime) return GAME_DURATION;
+  return Math.max(0, GAME_DURATION - (Date.now() - state.gameStartTime) / 1000);
+}
+
+function checkTimer() {
+  if (!state.gameStartTime || state.phase === 'BETTING' || state.phase === 'GAME_OVER') return;
+  if (getTimeRemaining() <= 0) {
+    state.timeUp = true;
+    // If ball is in play, let it finish; otherwise go to GAME_OVER
+    if (state.phase !== 'IN_PLAY' && state.phase !== 'RESULT') {
+      state.phase = 'GAME_OVER';
+    }
+  }
 }
 
 // ========== EDGE CASE HANDLING ==========
@@ -629,7 +652,7 @@ function handleDown(e) {
   }
 
   if (state.phase === 'GAME_OVER') {
-    if (pos.x >= 135 && pos.x <= 285 && pos.y >= 420 && pos.y <= 485) {
+    if (pos.x >= 135 && pos.x <= 285 && pos.y >= 440 && pos.y <= 505) {
       restartGame();
     }
   }
@@ -1001,12 +1024,23 @@ function drawTopBar() {
   ctx.lineTo(W, TOP_BAR_H);
   ctx.stroke();
 
+  // Timer
+  const remain = getTimeRemaining();
+  const mins = Math.floor(remain / 60);
+  const secs = Math.floor(remain % 60);
+  const timerText = `${mins}:${secs.toString().padStart(2, '0')}`;
+  ctx.fillStyle = remain <= 30 ? '#ff4444' : remain <= 60 ? '#ffaa00' : '#fff';
+  ctx.font = 'bold 16px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(timerText, 12, 14);
+
   // Ball count
   ctx.fillStyle = '#ffd700';
   ctx.font = 'bold 18px monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(`\u25CF ${state.balls}`, 12, 30);
+  ctx.fillText(`\u25CF ${state.balls}`, 12, 38);
 
   // Bet label + controls
   ctx.fillStyle = '#aaa';
@@ -1136,20 +1170,24 @@ function drawGameOver() {
   ctx.fillStyle = '#ff4466';
   ctx.font = 'bold 36px sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('GAME OVER', W / 2, 360);
+  ctx.fillText(state.timeUp ? '時間到！' : 'GAME OVER', W / 2, 350);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText(`最終球數: ${state.balls}`, W / 2, 390);
 
   ctx.fillStyle = '#aaa';
   ctx.font = '16px sans-serif';
-  ctx.fillText(`Rounds played: ${state.roundsPlayed}`, W / 2, 400);
+  ctx.fillText(`共 ${state.roundsPlayed} 局`, W / 2, 420);
 
   // Restart button
-  const bx = 145, by = 430, bw = 130, bh = 44;
+  const bx = 145, by = 450, bw = 130, bh = 44;
   ctx.fillStyle = '#ff6699';
   roundRect(bx, by, bw, bh, 10);
   ctx.fill();
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 16px sans-serif';
-  ctx.fillText('PLAY AGAIN', bx + bw / 2, by + bh / 2 + 6);
+  ctx.fillText('再玩一次', bx + bw / 2, by + bh / 2 + 6);
 }
 
 function drawParticles() {
@@ -1292,7 +1330,8 @@ function gameLoop(timestamp) {
     accumulator -= FIXED_DT;
   }
 
-  // Effects & render at display refresh rate
+  // Timer & effects & render at display refresh rate
+  checkTimer();
   updateEffects();
   render();
 

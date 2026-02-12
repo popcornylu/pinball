@@ -22,7 +22,7 @@ canvas{touch-action:none;display:block}
 'use strict';
 
 // ========== CONSTANTS ==========
-const VERSION = 'v1.5';
+const VERSION = 'v1.6';
 const W = 450, H = 800;
 const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
 const PLAY_W = CHANNEL_X;
@@ -565,6 +565,11 @@ function handleDown(e) {
       startRound();
       return;
     }
+  }
+
+  if (state.phase === 'IN_PLAY') {
+    nudgeTable();
+    return;
   }
 
   if (state.phase === 'SPRING_READY') {
@@ -1197,7 +1202,7 @@ function drawInstructions() {
       const fadeOut = Math.max(0, 1 - (elapsed - 2800) / 700);
       const alpha = Math.min(fadeIn, fadeOut) * 0.85;
 
-      const text = isTouchDevice ? '\u{1F4F1} 搖晃裝置推動彈珠！' : '\u2328 按空白鍵推動彈珠！';
+      const text = isTouchDevice ? '\u{1F446} 點擊或搖晃推動彈珠！' : '\u2328 點擊或按空白鍵推動彈珠！';
       const cx = PLAY_W / 2;
       const cy = 340;
 

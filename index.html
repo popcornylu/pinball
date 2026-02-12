@@ -22,7 +22,7 @@ canvas{touch-action:none;display:block}
 'use strict';
 
 // ========== CONSTANTS ==========
-const VERSION = 'v1.11';
+const VERSION = 'v1.12';
 const W = 450, H = 800;
 const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
 const PLAY_W = CHANNEL_X;
@@ -30,9 +30,9 @@ const PIN_R = 4, BALL_R = 8, BUMPER_R = 20;
 const LANE_COUNT = 14;
 const LANE_W = PLAY_W / LANE_COUNT;
 const LANE_Y = 700, LANE_H = 100;
-const PLUNGER_REST_Y = 735;
+const PLUNGER_REST_Y = 685;
 const PLUNGER_MAX_Y = 785;
-const LAUNCH_MIN_V = 6, LAUNCH_MAX_V = 36;
+const LAUNCH_MIN_V = 6, LAUNCH_MAX_V = 50;
 const MULTIPLIERS = [2, 4, 6, 8, 10];
 const LIT_COUNTS = {2:6, 4:3, 6:2, 8:1, 10:1};
 const BONUS_CHANCE = 0.2;
@@ -401,7 +401,8 @@ function launchBall() {
   const pullDist = state.plungerY - PLUNGER_REST_Y;
   if (pullDist < 5) return;
   const power = pullDist / (PLUNGER_MAX_Y - PLUNGER_REST_Y);
-  const speed = LAUNCH_MIN_V + power * (LAUNCH_MAX_V - LAUNCH_MIN_V);
+  const jitter = (Math.random() - 0.5) * 0.1 * power; // up to ±5% at full pull
+  const speed = LAUNCH_MIN_V + (power + jitter) * (LAUNCH_MAX_V - LAUNCH_MIN_V);
   const bx = CHANNEL_X + CHANNEL_W / 2;
   const by = state.plungerY - BALL_R - 5;
 
@@ -652,7 +653,8 @@ function handleUp(e) {
       if (state.phase === 'IN_PLAY' && ball) {
         // Re-launch existing ball
         const power = pullDist / (PLUNGER_MAX_Y - PLUNGER_REST_Y);
-        const speed = LAUNCH_MIN_V + power * (LAUNCH_MAX_V - LAUNCH_MIN_V);
+        const jitter = (Math.random() - 0.5) * 0.1 * power;
+        const speed = LAUNCH_MIN_V + (power + jitter) * (LAUNCH_MAX_V - LAUNCH_MIN_V);
         Body.setVelocity(ball, { x: 0, y: -speed });
         state.ballInChannel = false;
         state.launchTime = Date.now();
@@ -947,7 +949,7 @@ function drawSpring() {
   const power = pullDist / (PLUNGER_MAX_Y - PLUNGER_REST_Y);
 
   // Spring coils
-  const numCoils = 8;
+  const numCoils = 14;
   const springTop = plY + 8;
   const springHeight = anchorY - springTop;
   const coilH = springHeight / numCoils;

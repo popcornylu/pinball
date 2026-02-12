@@ -22,6 +22,7 @@ canvas{touch-action:none;display:block}
 'use strict';
 
 // ========== CONSTANTS ==========
+const VERSION = 'v1.2';
 const W = 450, H = 800;
 const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
 const PLAY_W = CHANNEL_X;
@@ -88,6 +89,7 @@ let floatingTexts = [];
 let shakeAmount = 0;
 let pinFlashes = {}; // pinIndex -> flash timer (0-1)
 let bumperFlashes = {}; // bumperIndex -> flash timer
+let lastNudgeTime = 0;
 
 // ========== AUDIO ==========
 let audioCtx = null;
@@ -166,6 +168,17 @@ function playTickSound() {
   g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.04);
   o.connect(g).connect(c.destination);
   o.start(); o.stop(c.currentTime + 0.04);
+}
+
+function playNudgeSound() {
+  const c = ensureAudio();
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = 'triangle';
+  o.frequency.value = 80;
+  g.gain.setValueAtTime(0.15, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.2);
+  o.connect(g).connect(c.destination);
+  o.start(); o.stop(c.currentTime + 0.2);
 }
 
 // ========== CREATE PHYSICS BODIES ==========
@@ -505,6 +518,21 @@ function checkEdgeCases() {
   }
 }
 
+// ========== NUDGE / TILT ==========
+function nudgeTable() {
+  if (state.phase !== 'IN_PLAY' || !ball) return;
+  const now = Date.now();
+  if (now - lastNudgeTime < 500) return;
+  lastNudgeTime = now;
+
+  const fx = (Math.random() - 0.5) * 0.024;
+  const fy = (Math.random() - 0.5) * 0.016 - 0.008;
+  Body.applyForce(ball, ball.position, { x: fx, y: fy });
+
+  shakeAmount = 8;
+  playNudgeSound();
+}
+
 // ========== INPUT ==========
 let dragging = false;
 
@@ -516,6 +544,7 @@ document.addEventListener('gesturechange', (e) => e.preventDefault());
 function handleDown(e) {
   e.preventDefault();
   ensureAudio(); // iOS requires audio context from user gesture
+  requestMotionPermission(); // iOS 13+ requires permission from user gesture
   const pos = getCanvasPos(e.touches ? e.touches[0] : e);
 
   if (state.phase === 'BETTING') {
@@ -574,6 +603,42 @@ canvas.addEventListener('pointerdown', handleDown);
 canvas.addEventListener('pointermove', handleMove);
 canvas.addEventListener('pointerup', handleUp);
 canvas.addEventListener('pointercancel', handleCancel);
+
+// Desktop: spacebar to nudge
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); nudgeTable(); }
+});
+
+// Mobile: shake-to-nudge via DeviceMotion
+let motionPermissionRequested = false;
+let lastShakeTime = 0;
+
+function setupDeviceMotion() {
+  window.addEventListener('devicemotion', (e) => {
+    const acc = e.accelerationIncludingGravity;
+    if (!acc) return;
+    const mag = Math.abs(acc.x) + Math.abs(acc.y) + Math.abs(acc.z);
+    if (mag > 25) {
+      const now = Date.now();
+      if (now - lastShakeTime < 600) return;
+      lastShakeTime = now;
+      nudgeTable();
+    }
+  });
+}
+
+function requestMotionPermission() {
+  if (motionPermissionRequested) return;
+  motionPermissionRequested = true;
+  if (typeof DeviceMotionEvent !== 'undefined' &&
+      typeof DeviceMotionEvent.requestPermission === 'function') {
+    DeviceMotionEvent.requestPermission().then((resp) => {
+      if (resp === 'granted') setupDeviceMotion();
+    }).catch(() => {});
+  } else {
+    setupDeviceMotion();
+  }
+}
 
 // ========== EFFECTS ==========
 function spawnParticles(x, y, color, count) {
@@ -954,6 +1019,13 @@ function drawTopBar() {
     ctx.textBaseline = 'middle';
     ctx.fillText(m + 'x', bx + 12, by + 14);
   });
+
+  // Version label (top-right)
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(VERSION, W - 8, 12);
 
   ctx.textBaseline = 'alphabetic';
 }

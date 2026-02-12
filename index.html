@@ -22,7 +22,7 @@ canvas{touch-action:none;display:block}
 'use strict';
 
 // ========== CONSTANTS ==========
-const VERSION = 'v1.4';
+const VERSION = 'v1.5';
 const W = 450, H = 800;
 const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
 const PLAY_W = CHANNEL_X;
@@ -530,8 +530,8 @@ function nudgeTable() {
   if (now - lastNudgeTime < 500) return;
   lastNudgeTime = now;
 
-  const fx = (Math.random() - 0.5) * 0.024;
-  const fy = (Math.random() - 0.5) * 0.016 - 0.008;
+  const fx = (Math.random() - 0.5) * 0.036;
+  const fy = (Math.random() - 0.5) * 0.024 - 0.012;
   Body.applyForce(ball, ball.position, { x: fx, y: fy });
 
   shakeAmount = 8;

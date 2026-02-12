@@ -22,7 +22,7 @@ canvas{touch-action:none;display:block}
 'use strict';
 
 // ========== CONSTANTS ==========
-const VERSION = 'v1.3';
+const VERSION = 'v1.4';
 const W = 450, H = 800;
 const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
 const PLAY_W = CHANNEL_X;
@@ -92,6 +92,9 @@ let bumperFlashes = {}; // bumperIndex -> flash timer
 let lastNudgeTime = 0;
 let nudgeHintShown = false; // true once player has used nudge
 const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+let motionGranted = false; // true after DeviceMotion permission granted
+let needsMotionPermission = isTouchDevice && typeof DeviceMotionEvent !== 'undefined' &&
+  typeof DeviceMotionEvent.requestPermission === 'function';
 
 // ========== AUDIO ==========
 let audioCtx = null;
@@ -547,7 +550,6 @@ document.addEventListener('gesturechange', (e) => e.preventDefault());
 function handleDown(e) {
   e.preventDefault();
   ensureAudio(); // iOS requires audio context from user gesture
-  requestMotionPermission(); // iOS 13+ requires permission from user gesture
   const pos = getCanvasPos(e.touches ? e.touches[0] : e);
 
   if (state.phase === 'BETTING') {
@@ -607,6 +609,16 @@ canvas.addEventListener('pointermove', handleMove);
 canvas.addEventListener('pointerup', handleUp);
 canvas.addEventListener('pointercancel', handleCancel);
 
+// iOS motion permission: must be triggered from a 'click' event
+canvas.addEventListener('click', (e) => {
+  if (!needsMotionPermission || motionGranted) return;
+  const pos = getCanvasPos(e);
+  // "Enable Shake" button hit area (drawn in drawStartButton)
+  if (state.phase === 'BETTING' && pos.x >= 145 && pos.x <= 275 && pos.y >= 430 && pos.y <= 470) {
+    requestMotionPermission();
+  }
+});
+
 // Desktop: spacebar to nudge
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); nudgeTable(); }
@@ -633,14 +645,24 @@ function setupDeviceMotion() {
 function requestMotionPermission() {
   if (motionPermissionRequested) return;
   motionPermissionRequested = true;
-  if (typeof DeviceMotionEvent !== 'undefined' &&
-      typeof DeviceMotionEvent.requestPermission === 'function') {
+  if (needsMotionPermission) {
     DeviceMotionEvent.requestPermission().then((resp) => {
-      if (resp === 'granted') setupDeviceMotion();
+      if (resp === 'granted') {
+        motionGranted = true;
+        needsMotionPermission = false;
+        setupDeviceMotion();
+      }
     }).catch(() => {});
-  } else {
+  } else if (isTouchDevice) {
+    motionGranted = true;
     setupDeviceMotion();
   }
+}
+
+// Auto-setup for non-iOS touch devices (no permission needed)
+if (isTouchDevice && !needsMotionPermission) {
+  motionGranted = true;
+  setupDeviceMotion();
 }
 
 // ========== EFFECTS ==========
@@ -1054,6 +1076,22 @@ function drawStartButton() {
   ctx.font = 'bold 20px sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('START', bx + bw / 2, by + bh / 2 + 7);
+
+  // "Enable Shake" button for iOS (needs click-based permission)
+  if (needsMotionPermission && !motionGranted) {
+    const sx = 145, sy = 430, sw = 130, sh = 36;
+    ctx.fillStyle = 'rgba(255, 170, 50, 0.8)';
+    roundRect(sx, sy, sw, sh, 10);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1;
+    roundRect(sx, sy, sw, sh, 10);
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('\u{1F4F3} 啟用搖晃', sx + sw / 2, sy + sh / 2 + 5);
+  }
 }
 
 function drawResult() {

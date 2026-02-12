@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Cache-Control" content="max-age=60, must-revalidate">
+<meta http-equiv="Cache-Control" content="max-age=10, must-revalidate">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -90,6 +90,8 @@ let shakeAmount = 0;
 let pinFlashes = {}; // pinIndex -> flash timer (0-1)
 let bumperFlashes = {}; // bumperIndex -> flash timer
 let lastNudgeTime = 0;
+let nudgeHintShown = false; // true once player has used nudge
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 
 // ========== AUDIO ==========
 let audioCtx = null;
@@ -531,6 +533,7 @@ function nudgeTable() {
 
   shakeAmount = 8;
   playNudgeSound();
+  nudgeHintShown = true;
 }
 
 // ========== INPUT ==========
@@ -615,10 +618,10 @@ let lastShakeTime = 0;
 
 function setupDeviceMotion() {
   window.addEventListener('devicemotion', (e) => {
-    const acc = e.accelerationIncludingGravity;
+    const acc = e.acceleration || e.accelerationIncludingGravity;
     if (!acc) return;
-    const mag = Math.abs(acc.x) + Math.abs(acc.y) + Math.abs(acc.z);
-    if (mag > 25) {
+    const mag = Math.abs(acc.x || 0) + Math.abs(acc.y || 0) + Math.abs(acc.z || 0);
+    if (mag > 15) {
       const now = Date.now();
       if (now - lastShakeTime < 600) return;
       lastShakeTime = now;
@@ -1145,6 +1148,45 @@ function drawInstructions() {
     ctx.lineTo(ax, ay + 25);
     ctx.lineTo(ax + 6, ay + 19);
     ctx.stroke();
+  }
+
+  // Nudge hint: show during IN_PLAY for first 3 rounds, fade out after 3s
+  if (state.phase === 'IN_PLAY' && !nudgeHintShown && state.roundsPlayed < 3) {
+    const elapsed = Date.now() - state.launchTime;
+    // Show between 0.5s and 3.5s after launch
+    if (elapsed > 500 && elapsed < 3500) {
+      const fadeIn = Math.min(1, (elapsed - 500) / 400);
+      const fadeOut = Math.max(0, 1 - (elapsed - 2800) / 700);
+      const alpha = Math.min(fadeIn, fadeOut) * 0.85;
+
+      const text = isTouchDevice ? '\u{1F4F1} 搖晃裝置推動彈珠！' : '\u2328 按空白鍵推動彈珠！';
+      const cx = PLAY_W / 2;
+      const cy = 340;
+
+      // Background pill
+      ctx.font = 'bold 15px sans-serif';
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.fillStyle = '#000';
+      const tw = ctx.measureText(text).width || 180;
+      roundRect(cx - tw / 2 - 16, cy - 18, tw + 32, 36, 18);
+      ctx.fill();
+
+      // Border
+      ctx.strokeStyle = 'rgba(255,200,100,0.6)';
+      ctx.lineWidth = 1.5;
+      roundRect(cx - tw / 2 - 16, cy - 18, tw + 32, 36, 18);
+      ctx.stroke();
+
+      // Text
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#ffd700';
+      ctx.font = 'bold 15px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, cx, cy);
+      ctx.textBaseline = 'alphabetic';
+      ctx.globalAlpha = 1;
+    }
   }
 }
 

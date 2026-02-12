@@ -22,7 +22,7 @@ canvas{touch-action:none;display:block}
 'use strict';
 
 // ========== CONSTANTS ==========
-const VERSION = 'v1.9';
+const VERSION = 'v1.10';
 const W = 450, H = 800;
 const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
 const PLAY_W = CHANNEL_X;
@@ -1350,20 +1350,23 @@ function render() {
 // ========== MAIN LOOP ==========
 let lastTime = 0;
 const FIXED_DT = 1000 / 60;
+let accumulator = 0;
 
 function gameLoop(timestamp) {
   if (!lastTime) lastTime = timestamp;
   const dt = Math.min(timestamp - lastTime, 50); // cap at 50ms
   lastTime = timestamp;
+  accumulator += dt;
 
-  // Physics update
-  Engine.update(engine, FIXED_DT);
+  // Fixed-step physics: run at 60Hz regardless of display refresh rate
+  while (accumulator >= FIXED_DT) {
+    Engine.update(engine, FIXED_DT);
+    checkEdgeCases();
+    accumulator -= FIXED_DT;
+  }
 
-  // Game logic
-  checkEdgeCases();
+  // Effects & render at display refresh rate
   updateEffects();
-
-  // Render
   render();
 
   requestAnimationFrame(gameLoop);

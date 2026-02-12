@@ -22,7 +22,7 @@ canvas{touch-action:none;display:block}
 'use strict';
 
 // ========== CONSTANTS ==========
-const VERSION = 'v1.7';
+const VERSION = 'v1.9';
 const W = 450, H = 800;
 const CHANNEL_W = 30, CHANNEL_X = W - CHANNEL_W;
 const PLAY_W = CHANNEL_X;
@@ -32,7 +32,7 @@ const LANE_W = PLAY_W / LANE_COUNT;
 const LANE_Y = 700, LANE_H = 100;
 const PLUNGER_REST_Y = 735;
 const PLUNGER_MAX_Y = 785;
-const LAUNCH_MIN_V = 20, LAUNCH_MAX_V = 30;
+const LAUNCH_MIN_V = 5, LAUNCH_MAX_V = 30;
 const MULTIPLIERS = [2, 4, 6, 8, 10];
 const LIT_COUNTS = {2:7, 4:4, 6:3, 8:2, 10:1};
 const TOP_BAR_H = 55;
@@ -80,6 +80,8 @@ const state = {
   resultText: '',
   resultColor: '',
   winAmount: 0,
+  ballInChannel: false,
+  springBounce: 0,
 };
 
 let ball = null;
@@ -402,6 +404,7 @@ function launchBall() {
   state.launchTime = Date.now();
   state.stuckTimer = 0;
   state.lastBallSpeed = speed;
+  state.ballInChannel = false;
   ballTrail = [];
   playLaunchSound();
 }
@@ -486,13 +489,33 @@ function checkEdgeCases() {
     return;
   }
 
-  // Ball fell back into channel - allow re-pull
-  if (pos.x > CHANNEL_X && pos.y > 750 && spd < 1.5) {
-    Composite.remove(world, ball);
-    ball = null;
-    ballTrail = [];
-    state.phase = 'SPRING_READY';
-    state.plungerY = PLUNGER_REST_Y;
+  // Ball in channel hits plunger top - lock it on the spring with bounce
+  const plungerTopY = state.plungerY - BALL_R - 5;
+  if (!state.ballInChannel && pos.x > CHANNEL_X && pos.y >= plungerTopY && ball.velocity.y >= 0) {
+    state.ballInChannel = true;
+    // Compress spring based on impact speed
+    const impact = Math.min(spd / 25, 1);
+    state.springBounce = impact * (PLUNGER_MAX_Y - PLUNGER_REST_Y) * 0.6;
+    playNudgeSound();
+  }
+
+  // Keep ball locked to plunger while in channel
+  if (state.ballInChannel && !dragging) {
+    // Animate spring bounce decay
+    if (state.springBounce > 0.5) {
+      state.springBounce *= 0.85;
+    } else {
+      state.springBounce = 0;
+    }
+    state.plungerY = PLUNGER_REST_Y + state.springBounce;
+    const bx = CHANNEL_X + CHANNEL_W / 2;
+    Body.setPosition(ball, { x: bx, y: state.plungerY - BALL_R - 5 });
+    Body.setVelocity(ball, { x: 0, y: 0 });
+    return;
+  } else if (state.ballInChannel && dragging) {
+    const bx = CHANNEL_X + CHANNEL_W / 2;
+    Body.setPosition(ball, { x: bx, y: state.plungerY - BALL_R - 5 });
+    Body.setVelocity(ball, { x: 0, y: 0 });
     return;
   }
 
@@ -568,7 +591,12 @@ function handleDown(e) {
   }
 
   if (state.phase === 'IN_PLAY') {
-    nudgeTable();
+    // Allow plunger drag when ball is back in channel
+    if (state.ballInChannel && pos.x > CHANNEL_X - 80 && pos.y > LANE_Y - 80) {
+      dragging = true;
+    } else {
+      nudgeTable();
+    }
     return;
   }
 
@@ -594,10 +622,21 @@ function handleMove(e) {
 
 function handleUp(e) {
   e.preventDefault();
-  if (dragging && state.phase === 'SPRING_READY') {
+  if (dragging && (state.phase === 'SPRING_READY' || (state.phase === 'IN_PLAY' && state.ballInChannel))) {
     const pullDist = state.plungerY - PLUNGER_REST_Y;
     if (pullDist > 5) {
-      launchBall();
+      if (state.phase === 'IN_PLAY' && ball) {
+        // Re-launch existing ball
+        const power = pullDist / (PLUNGER_MAX_Y - PLUNGER_REST_Y);
+        const speed = LAUNCH_MIN_V + power * (LAUNCH_MAX_V - LAUNCH_MIN_V);
+        Body.setVelocity(ball, { x: 0, y: -speed });
+        state.ballInChannel = false;
+        state.launchTime = Date.now();
+        ballTrail = [];
+        playLaunchSound();
+      } else {
+        launchBall();
+      }
     }
     state.plungerY = PLUNGER_REST_Y;
   }
@@ -917,7 +956,7 @@ function drawBall(x, y) {
 }
 
 function drawSpring() {
-  if (state.phase !== 'SPRING_READY' && state.phase !== 'MULT_ANIM' && state.phase !== 'IN_PLAY') return;
+  // Spring is always visible
   const cx = CHANNEL_X + CHANNEL_W / 2;
   const plY = state.plungerY;
   const anchorY = H - 10;
@@ -963,7 +1002,7 @@ function drawSpring() {
     ctx.fillRect(CHANNEL_X + CHANNEL_W - 6, plY - barH, 4, barH);
   }
 
-  // Ball preview on plunger
+  // Ball preview on plunger (before launch)
   if (state.phase === 'SPRING_READY') {
     drawBall(cx, plY - BALL_R - 6);
   }

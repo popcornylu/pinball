@@ -32,7 +32,7 @@ const LANE_W = PLAY_W / LANE_COUNT;
 const LANE_Y = 700, LANE_H = 100;
 const PLUNGER_REST_Y = 735;
 const PLUNGER_MAX_Y = 785;
-const LAUNCH_MIN_V = 5, LAUNCH_MAX_V = 30;
+const LAUNCH_MIN_V = 6, LAUNCH_MAX_V = 36;
 const MULTIPLIERS = [2, 4, 6, 8, 10];
 const LIT_COUNTS = {2:7, 4:4, 6:3, 8:2, 10:1};
 const TOP_BAR_H = 55;
@@ -291,7 +291,7 @@ function createCurveGuide() {
   // Center at (cx, cy), radius r.  Ball follows the INSIDE of this arc.
   // Arc goes from angle 0 (right side, where channel opens)
   // to angle -π/2 (top, where ball exits into play area).
-  const cx = 350, cy = 80, r = 95;
+  const cx = 350 + BALL_R * 2, r = 95, cy = 80 + r - 60;
   const n = 25;
   for (let i = 0; i <= n; i++) {
     const angle = -(i / n) * Math.PI / 2; // 0 to -π/2
@@ -594,7 +594,7 @@ function handleDown(e) {
     // Allow plunger drag when ball is back in channel
     if (state.ballInChannel && pos.x > CHANNEL_X - 80 && pos.y > LANE_Y - 80) {
       dragging = true;
-    } else {
+    } else if (pos.y > TOP_BAR_H && pos.x < CHANNEL_X) {
       nudgeTable();
     }
     return;
@@ -904,7 +904,7 @@ function drawLanes() {
 
 function drawCurveGuide() {
   // Red/orange arc line showing ball path (drawn behind the circles)
-  const cx = 350, cy = 80, r = 95;
+  const cx = 350 + BALL_R * 2, r = 95, cy = 80 + r - 60;
   ctx.beginPath();
   ctx.arc(cx, cy, r + 10, -Math.PI / 2, 0);
   ctx.strokeStyle = '#cc3320';
